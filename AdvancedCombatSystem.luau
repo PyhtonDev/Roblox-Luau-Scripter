@@ -1,552 +1,173 @@
 -- Discord: zynix28 | Roblox: Zynix_OP
 
---[[
-    Advanced Combat Framework
-    Author Credit:
-    Discord: zynix28
-    Roblox: Zynix_OP
+local Players=game:GetService("Players")
+local RunService=game:GetService("RunService")
 
-    Purpose:
-    This script demonstrates intermediate Luau scripting knowledge
-    using metatables, CFrame math, raycasting, physics interactions,
-    cooldowns, server validation, optimization, and Roblox API usage.
-
-    Demo Instructions:
-    - Place this Script inside ServerScriptService
-    - Create a RemoteEvent inside ReplicatedStorage called "CombatRemote"
-    - Create a Tool named "CombatTool"
-    - LocalScript should fire attack requests to CombatRemote
-
-    Features:
-    - Combo combat system
-    - Dash mechanic
-    - Raycast hit validation
-    - Physics knockback
-    - Metatable OOP structure
-    - Cooldown management
-    - Anti-spam validation
-]]
-
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-local Debris = game:GetService("Debris")
-local TweenService = game:GetService("TweenService")
-local CollectionService = game:GetService("CollectionService")
-
-local CombatRemote = ReplicatedStorage:WaitForChild("CombatRemote")
-
----------------------------------------------------------------------
--- CONFIGURATION
----------------------------------------------------------------------
-
-local CONFIG = {
-    ComboResetTime = 1.25,
-    AttackCooldown = 0.4,
-    DashCooldown = 2,
-    DashDistance = 20,
-    BaseDamage = 12,
-    KnockbackForce = 65,
-    MaxAttackDistance = 12,
-    StunTime = 0.35,
-    RaycastHeight = 4
+local Config={
+DetectRange=80,
+AttackRange=4,
+Speed=5,
+Damage=8,
+Cooldown=1,
+Knockback=22,
+UpForce=6
 }
 
----------------------------------------------------------------------
--- OPTIMIZATION TABLES
----------------------------------------------------------------------
+local Targets={}
 
-local PlayerData = {}
-local ActiveCooldowns = {}
-
----------------------------------------------------------------------
--- HELPER FUNCTIONS
----------------------------------------------------------------------
-
-local function getCharacter(player)
-    if not player then
-        return nil
-    end
-
-    local character = player.Character
-
-    if character and character.Parent then
-        return character
-    end
-
-    return nil
+local function dist(a,b)
+return (a-b).Magnitude
 end
 
-local function getHumanoid(character)
-    if not character then
-        return nil
-    end
-
-    return character:FindFirstChildOfClass("Humanoid")
+local function root(c)
+return c and c:FindFirstChild("HumanoidRootPart")
 end
 
-local function getRoot(character)
-    if not character then
-        return nil
-    end
-
-    return character:FindFirstChild("HumanoidRootPart")
+local function hum(c)
+return c and c:FindFirstChildOfClass("Humanoid")
 end
 
-local function isAlive(character)
-    local humanoid = getHumanoid(character)
-
-    if humanoid and humanoid.Health > 0 then
-        return true
-    end
-
-    return false
+local function add(p)
+if Targets[p] then return end
+Targets[p]={
+last=0,
+inRange=false
+}
 end
 
----------------------------------------------------------------------
--- COMBAT CLASS USING METATABLES
----------------------------------------------------------------------
-
-local CombatSystem = {}
-CombatSystem.__index = CombatSystem
-
-function CombatSystem.new(player)
-    local self = setmetatable({}, CombatSystem)
-
-    self.Player = player
-    self.Combo = 1
-    self.LastAttack = 0
-    self.LastDash = 0
-    self.IsAttacking = false
-    self.IsStunned = false
-
-    return self
+for _,v in ipairs(workspace:GetChildren()) do
+if v:IsA("BasePart") and v.Name=="Target" then
+add(v)
+end
 end
 
----------------------------------------------------------------------
--- COOLDOWN CHECK
----------------------------------------------------------------------
-
-function CombatSystem:CanAttack()
-    local currentTime = tick()
-
-    if self.IsStunned then
-        return false
-    end
-
-    if currentTime - self.LastAttack < CONFIG.AttackCooldown then
-        return false
-    end
-
-    return true
+workspace.ChildAdded:Connect(function(v)
+if v:IsA("BasePart") and v.Name=="Target" then
+add(v)
 end
-
----------------------------------------------------------------------
--- DASH MECHANIC USING CFRAME
----------------------------------------------------------------------
-
-function CombatSystem:Dash()
-    local character = getCharacter(self.Player)
-
-    if not character then
-        return
-    end
-
-    local root = getRoot(character)
-
-    if not root then
-        return
-    end
-
-    local currentTime = tick()
-
-    if currentTime - self.LastDash < CONFIG.DashCooldown then
-        return
-    end
-
-    self.LastDash = currentTime
-
-    -- CFrame math is used to move player forward
-    -- relative to character orientation.
-    local dashDirection = root.CFrame.LookVector
-    local targetPosition =
-        root.Position + (dashDirection * CONFIG.DashDistance)
-
-    local dashTween = TweenService:Create(
-        root,
-        TweenInfo.new(0.2, Enum.EasingStyle.Linear),
-        {
-            CFrame = CFrame.new(
-                targetPosition,
-                targetPosition + dashDirection
-            )
-        }
-    )
-
-    dashTween:Play()
-end
-
----------------------------------------------------------------------
--- HIT DETECTION USING RAYCASTING
----------------------------------------------------------------------
-
-function CombatSystem:GetTargets()
-    local character = getCharacter(self.Player)
-
-    if not character then
-        return {}
-    end
-
-    local root = getRoot(character)
-
-    if not root then
-        return {}
-    end
-
-    local origin =
-        root.Position + Vector3.new(0, CONFIG.RaycastHeight, 0)
-
-    local direction =
-        root.CFrame.LookVector * CONFIG.MaxAttackDistance
-
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = {character}
-
-    local result =
-        workspace:Raycast(origin, direction, params)
-
-    if result then
-        local hitModel =
-            result.Instance:FindFirstAncestorOfClass("Model")
-
-        if hitModel and hitModel ~= character then
-            return {hitModel}
-        end
-    end
-
-    return {}
-end
-
----------------------------------------------------------------------
--- DAMAGE + STUN SYSTEM
----------------------------------------------------------------------
-
-function CombatSystem:ApplyStun(targetHumanoid)
-    if not targetHumanoid then
-        return
-    end
-
-    local oldWalkSpeed = targetHumanoid.WalkSpeed
-    local oldJumpPower = targetHumanoid.JumpPower
-
-    targetHumanoid.WalkSpeed = 0
-    targetHumanoid.JumpPower = 0
-
-    task.delay(CONFIG.StunTime, function()
-        if targetHumanoid and targetHumanoid.Parent then
-            targetHumanoid.WalkSpeed = oldWalkSpeed
-            targetHumanoid.JumpPower = oldJumpPower
-        end
-    end)
-end
-
----------------------------------------------------------------------
--- PHYSICS KNOCKBACK
----------------------------------------------------------------------
-
-function CombatSystem:ApplyKnockback(targetCharacter)
-    local attackerCharacter = getCharacter(self.Player)
-
-    if not attackerCharacter then
-        return
-    end
-
-    local attackerRoot = getRoot(attackerCharacter)
-    local targetRoot = getRoot(targetCharacter)
-
-    if not attackerRoot or not targetRoot then
-        return
-    end
-
-    -- Direction calculated using vector math.
-    -- This creates realistic push direction.
-    local direction =
-        (targetRoot.Position - attackerRoot.Position).Unit
-
-    local velocity = Instance.new("BodyVelocity")
-    velocity.MaxForce = Vector3.new(100000, 50000, 100000)
-
-    velocity.Velocity =
-        (direction * CONFIG.KnockbackForce)
-        + Vector3.new(0, 15, 0)
-
-    velocity.Parent = targetRoot
-
-    Debris:AddItem(velocity, 0.18)
-end
-
----------------------------------------------------------------------
--- DAMAGE PROCESSING
----------------------------------------------------------------------
-
-function CombatSystem:DamageTarget(targetCharacter)
-    local targetHumanoid = getHumanoid(targetCharacter)
-
-    if not targetHumanoid then
-        return
-    end
-
-    if targetHumanoid.Health <= 0 then
-        return
-    end
-
-    local comboMultiplier = 1
-
-    if self.Combo == 2 then
-        comboMultiplier = 1.15
-    elseif self.Combo == 3 then
-        comboMultiplier = 1.3
-    end
-
-    local finalDamage =
-        CONFIG.BaseDamage * comboMultiplier
-
-    targetHumanoid:TakeDamage(finalDamage)
-
-    self:ApplyKnockback(targetCharacter)
-    self:ApplyStun(targetHumanoid)
-end
-
----------------------------------------------------------------------
--- COMBO SYSTEM
----------------------------------------------------------------------
-
-function CombatSystem:UpdateCombo()
-    local currentTime = tick()
-
-    if currentTime - self.LastAttack >
-        CONFIG.ComboResetTime then
-
-        self.Combo = 1
-    else
-        self.Combo += 1
-
-        if self.Combo > 3 then
-            self.Combo = 1
-        end
-    end
-end
-
----------------------------------------------------------------------
--- MAIN ATTACK LOGIC
----------------------------------------------------------------------
-
-function CombatSystem:Attack()
-    if not self:CanAttack() then
-        return
-    end
-
-    local character = getCharacter(self.Player)
-
-    if not character then
-        return
-    end
-
-    if not isAlive(character) then
-        return
-    end
-
-    self.LastAttack = tick()
-    self.IsAttacking = true
-
-    self:UpdateCombo()
-
-    local targets = self:GetTargets()
-
-    for _, targetCharacter in ipairs(targets) do
-        if targetCharacter then
-            self:DamageTarget(targetCharacter)
-        end
-    end
-
-    task.delay(0.15, function()
-        self.IsAttacking = false
-    end)
-end
-
----------------------------------------------------------------------
--- PLAYER INITIALIZATION
----------------------------------------------------------------------
-
-local function setupPlayer(player)
-    PlayerData[player] =
-        CombatSystem.new(player)
-
-    ActiveCooldowns[player] = {
-        AttackCount = 0,
-        LastRequest = 0
-    }
-end
-
----------------------------------------------------------------------
--- PLAYER REMOVAL CLEANUP
----------------------------------------------------------------------
-
-local function cleanupPlayer(player)
-    PlayerData[player] = nil
-    ActiveCooldowns[player] = nil
-end
-
----------------------------------------------------------------------
--- ANTI-EXPLOIT VALIDATION
----------------------------------------------------------------------
-
-local function validateRemote(player)
-    local cooldown =
-        ActiveCooldowns[player]
-
-    if not cooldown then
-        return false
-    end
-
-    local currentTime = tick()
-
-    if currentTime -
-        cooldown.LastRequest < 0.05 then
-
-        cooldown.AttackCount += 1
-    else
-        cooldown.AttackCount = 0
-    end
-
-    cooldown.LastRequest = currentTime
-
-    -- Prevent remote spam abuse.
-    if cooldown.AttackCount > 10 then
-        warn(player.Name ..
-            " attempted remote spam.")
-
-        return false
-    end
-
-    return true
-end
-
----------------------------------------------------------------------
--- REMOTE EVENT HANDLER
----------------------------------------------------------------------
-
-CombatRemote.OnServerEvent:Connect(function(
-    player,
-    action
-)
-    if not validateRemote(player) then
-        return
-    end
-
-    local combat =
-        PlayerData[player]
-
-    if not combat then
-        return
-    end
-
-    if action == "Attack" then
-        combat:Attack()
-
-    elseif action == "Dash" then
-        combat:Dash()
-    end
 end)
 
----------------------------------------------------------------------
--- PLAYER CONNECTIONS
----------------------------------------------------------------------
+local function nearest(pos)
+local best=nil
+local bestd=Config.DetectRange
 
-Players.PlayerAdded:Connect(function(player)
-    setupPlayer(player)
+for _,p in ipairs(Players:GetPlayers()) do
+local c=p.Character
+local r=root(c)
+local h=hum(c)
 
-    player.CharacterAdded:Connect(function(character)
-        local humanoid =
-            character:WaitForChild("Humanoid")
-
-        humanoid.Died:Connect(function()
-            local combat =
-                PlayerData[player]
-
-            if combat then
-                combat.Combo = 1
-                combat.IsAttacking = false
-            end
-        end)
-    end)
-end)
-
-Players.PlayerRemoving:Connect(function(player)
-    cleanupPlayer(player)
-end)
-
----------------------------------------------------------------------
--- EXISTING PLAYERS
----------------------------------------------------------------------
-
-for _, player in ipairs(
-    Players:GetPlayers()
-) do
-    setupPlayer(player)
+if r and h and h.Health>0 then
+local d=dist(r.Position,pos)
+if d<bestd then
+bestd=d
+best=r
+end
+end
 end
 
----------------------------------------------------------------------
--- DEBUG TAG SYSTEM
----------------------------------------------------------------------
-
--- CollectionService is used here to show
--- broader Roblox API understanding.
-
-local function markCombatCharacter(character)
-    if not character then
-        return
-    end
-
-    if not CollectionService:HasTag(
-        character,
-        "CombatEnabled"
-    ) then
-        CollectionService:AddTag(
-            character,
-            "CombatEnabled"
-        )
-    end
+return best,bestd
 end
 
-Players.PlayerAdded:Connect(function(player)
-    player.CharacterAdded:Connect(function(character)
-        markCombatCharacter(character)
-    end)
+local function damagePlayer(r,data)
+local h=hum(r.Parent)
+if not h then return end
+
+if tick()-data.last<Config.Cooldown then return end
+data.last=tick()
+
+h:TakeDamage(Config.Damage)
+end
+
+local function move(part,target)
+local dir=target.Position-part.Position
+if dir.Magnitude>0 then dir=dir.Unit end
+part.CFrame=part.CFrame+dir*Config.Speed*0.1
+end
+
+local function knock(part,root)
+local dir=part.Position-root.Position
+if dir.Magnitude==0 then return end
+dir=dir.Unit
+
+part.AssemblyLinearVelocity=
+dir*Config.Knockback+Vector3.new(0,Config.UpForce,0)
+end
+
+local function toolHook(pl)
+pl.CharacterAdded:Connect(function(c)
+task.wait(1)
+
+local t=pl.Backpack:FindFirstChild("Sword")
+if not t then return end
+
+t.Activated:Connect(function()
+local r=root(c)
+if not r then return end
+
+for _,p in ipairs(workspace:GetChildren()) do
+if p:IsA("BasePart") and p.Name=="Target" then
+if dist(p.Position,r.Position)<8 then
+knock(p,r)
+end
+end
+end
 end)
+end)
+end
 
----------------------------------------------------------------------
--- PERFORMANCE MONITOR
----------------------------------------------------------------------
-
--- RunService heartbeat is intentionally
--- lightweight to avoid performance issues.
+Players.PlayerAdded:Connect(toolHook)
 
 RunService.Heartbeat:Connect(function()
-    for player, combat
-        in pairs(PlayerData) do
+for part,data in pairs(Targets) do
+if part and part.Parent then
 
-        if combat.Combo > 3 then
-            combat.Combo = 1
-        end
-    end
+local r,dd=nearest(part.Position)
+
+if r and dd<=Config.DetectRange then
+
+move(part,r)
+
+if dd<=Config.AttackRange then
+if not data.inRange then
+data.inRange=true
+damagePlayer(r,data)
+end
+else
+data.inRange=false
+end
+
+else
+data.inRange=false
+end
+
+end
+end
 end)
 
----------------------------------------------------------------------
--- END OF SYSTEM
----------------------------------------------------------------------
+RunService.Heartbeat:Connect(function()
+for p in pairs(Targets) do
+if not p or not p.Parent then
+Targets[p]=nil
+end
+end
+end)
 
-print(
-    "Advanced Combat Framework Loaded Successfully"
-)
+RunService.Heartbeat:Connect(function()
+for _,d in pairs(Targets) do
+if d.last<0 then d.last=0 end
+end
+end)
+
+RunService.Heartbeat:Connect(function()
+for _,d in pairs(Targets) do
+if d.last>999999 then d.last=0 end
+end
+end)
+
+RunService.Heartbeat:Connect(function()
+for _,d in pairs(Targets) do
+d.inRange=d.inRange or false
+end
+end)
+
+print("SYSTEM READY")
